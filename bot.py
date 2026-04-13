@@ -91,7 +91,7 @@ if platform.system() == "Windows":
 
 # ─── OAuth Token 自動刷新 ──────────────────────────────────────────────────────
 
-CREDENTIALS_FILE = os.path.expanduser(r"~\.claude\.credentials.json")
+CREDENTIALS_FILE = os.path.expanduser("~/.claude/.credentials.json")
 _OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 _CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
@@ -332,9 +332,9 @@ def _run_claude(message: str, chat_id: int) -> str:
     if token:
         run_env["ANTHROPIC_API_KEY"] = token
 
+    _extra = {"creationflags": subprocess.CREATE_NO_WINDOW} if platform.system() == "Windows" else {}
     result = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", timeout=300, env=run_env,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        cmd, capture_output=True, text=True, encoding="utf-8", timeout=300, env=run_env, **_extra,
     )
 
     logging.info("CLI returncode=%s, stdout_len=%s, stderr_len=%s",
@@ -358,8 +358,7 @@ def _run_claude(message: str, chat_id: int) -> str:
             clear_session(chat_id)
             cmd = [c for c in cmd if c != "--resume" and c != session_id]
             result = subprocess.run(
-                cmd, capture_output=True, text=True, encoding="utf-8", timeout=300, env=run_env,
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                cmd, capture_output=True, text=True, encoding="utf-8", timeout=300, env=run_env, **_extra,
             )
             stdout = result.stdout or ""
             try:
