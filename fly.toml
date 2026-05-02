@@ -1,0 +1,22 @@
+app = "chimmmmy-bot"
+primary_region = "nrt"
+
+[build]
+
+[env]
+  DATA_DIR = "/data"
+
+[[mounts]]
+  source = "chimmy_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpus = 1
+
+[deploy]
+  strategy = "immediate"
+
+[processes]
+  app = "python3 bot.py"
