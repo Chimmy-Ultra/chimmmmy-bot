@@ -54,9 +54,12 @@ _AUTH_VARS = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
               "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST")
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 if os.environ.get("CLAUDECODE"):
-    with open(_env_path, "r", encoding="utf-8") as _f:
-        _lines = [l for l in _f.read().splitlines()
-                  if not any(l.startswith(k) for k in _CONTEXT_VARS)]
+    try:
+        with open(_env_path, "r", encoding="utf-8") as _f:
+            _lines = [l for l in _f.read().splitlines()
+                      if not any(l.startswith(k) for k in _CONTEXT_VARS)]
+    except FileNotFoundError:
+        _lines = []
     for _k in _CONTEXT_VARS:
         if _k in os.environ:
             _lines.append(f"{_k}={os.environ[_k]}")
@@ -66,18 +69,16 @@ if os.environ.get("CLAUDECODE"):
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
-# 直接呼叫 node + cli.js，繞過 claude.cmd / claude shell wrapper
-# Windows: node.exe + AppData npm 路徑；Linux: 全域 npm 路徑
+# Claude CLI 是 native binary（claude / claude.exe）。預設靠 PATH 找；
+# 可用 CLAUDE_BIN 環境變數指定絕對路徑。
 if platform.system() == "Windows":
-    _npm_dir = os.path.join(os.environ.get("APPDATA", ""), "npm")
-    NODE_EXE = r"C:\Program Files\nodejs\node.exe"
-    CLAUDE_JS = os.path.join(_npm_dir, "node_modules", "@anthropic-ai", "claude-code", "cli.js")
+    CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or "claude.exe"
 else:
-    NODE_EXE = "node"
-    CLAUDE_JS = "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"
+    CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or "claude"
 
-# System prompt 寫到檔案，避免 Windows 把特殊字元吃掉
-PROMPT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "system_prompt.txt")
+# 狀態檔放到 DATA_DIR（Fly.io volume）；本機開發 fallback 到 script 目錄
+DATA_DIR = os.environ.get("DATA_DIR") or os.path.dirname(os.path.abspath(__file__))
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # ENV 保留 context vars，但拿掉可能過期的 auth vars
 ENV = os.environ.copy()
@@ -239,7 +240,7 @@ def build_system_prompt() -> str:
 
 # ─── Memory ───────────────────────────────────────────────────────────────────
 
-MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory.json")
+MEMORY_FILE = os.path.join(DATA_DIR, "memory.json")
 
 
 def load_memory() -> dict[str, str]:
@@ -283,7 +284,7 @@ def extract_and_save_memory(text: str) -> str:
 
 # ─── Session 管理 ─────────────────────────────────────────────────────────────
 
-SESSIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions.json")
+SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
 
 
 def _load_sessions() -> dict[int, str]:
@@ -311,21 +312,19 @@ def clear_session(chat_id: int) -> None:
 
 def _run_claude(message: str, chat_id: int) -> str:
     system_prompt = build_system_prompt()
-    with open(PROMPT_FILE, "w", encoding="utf-8") as f:
-        f.write(system_prompt)
-
     session_id = sessions.get(chat_id)
 
     cmd = [
-        NODE_EXE, CLAUDE_JS,
-        "-p", message,
-        "--system-prompt-file", PROMPT_FILE,
+        CLAUDE_BIN,
+        "--print",
+        "--system-prompt", system_prompt,
         "--model", MODEL,
         "--output-format", "json",
         "--permission-mode", "bypassPermissions",
     ]
     if session_id:
         cmd.extend(["--resume", session_id])
+    cmd.append(message)
 
     run_env = ENV.copy()
     token = get_fresh_token()
@@ -493,7 +492,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── 照片處理 ─────────────────────────────────────────────────────────────────
 
-PHOTOS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "photos")
+PHOTOS_DIR = os.path.join(DATA_DIR, "photos")
 os.makedirs(PHOTOS_DIR, exist_ok=True)
 
 

@@ -14,7 +14,7 @@ COPY requirements.txt .
 RUN pip3 install -r requirements.txt --break-system-packages
 
 COPY . .
-RUN mkdir -p /home/node/.claude && chown -R node:node /app /home/node/.claude
+RUN mkdir -p /home/node/.claude /data && chown -R node:node /app /home/node/.claude /data
 
 USER node
 
