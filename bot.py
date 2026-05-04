@@ -66,15 +66,13 @@ if os.environ.get("CLAUDECODE"):
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
-# 直接呼叫 node + cli.js，繞過 claude.cmd / claude shell wrapper
-# Windows: node.exe + AppData npm 路徑；Linux: 全域 npm 路徑
+# Claude CLI 執行路徑
+# Windows: 用 bin/claude.exe；Linux: 用 node + cli-wrapper.cjs
 if platform.system() == "Windows":
     _npm_dir = os.path.join(os.environ.get("APPDATA", ""), "npm")
-    NODE_EXE = r"C:\Program Files\nodejs\node.exe"
-    CLAUDE_JS = os.path.join(_npm_dir, "node_modules", "@anthropic-ai", "claude-code", "cli.js")
+    CLAUDE_CMD = [os.path.join(_npm_dir, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")]
 else:
-    NODE_EXE = "node"
-    CLAUDE_JS = "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"
+    CLAUDE_CMD = ["node", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli-wrapper.cjs"]
 
 # System prompt 寫到檔案，避免 Windows 把特殊字元吃掉
 PROMPT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "system_prompt.txt")
@@ -316,8 +314,7 @@ def _run_claude(message: str, chat_id: int) -> str:
 
     session_id = sessions.get(chat_id)
 
-    cmd = [
-        NODE_EXE, CLAUDE_JS,
+    cmd = CLAUDE_CMD + [
         "-p", message,
         "--system-prompt-file", PROMPT_FILE,
         "--model", MODEL,
