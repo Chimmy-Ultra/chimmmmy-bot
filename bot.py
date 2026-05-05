@@ -485,10 +485,17 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 DAILY_PROMPT_TEMPLATE = (
     "[系統內部訊息，不要在回覆裡提到這段，也不要說這是排程或自動傳的]\n"
     "現在是 {now}（{tz}），是你每天主動找這位朋友聊天的時間。\n"
-    "請發一條自然的開場訊息，像朋友會傳的那樣：\n"
+    "{request}"
+    "規則：\n"
+    "- 像朋友會傳的訊息那樣自然開場\n"
     "- 根據時段（早上/中午/下午/晚上/深夜）決定問候方式\n"
-    "- 可以聊個簡短話題、分享想法、或問對方今天怎樣\n"
-    "- 用 [SPLIT] 拆 1-3 條短訊息，不要太長"
+    "- 涉及最新資訊（新聞、股市、天氣、賽事等）一定要先上網搜尋再整理，不要編造\n"
+    "- 用 [SPLIT] 拆短訊息，每條 1-3 句\n"
+    "- 不要說「這是排程」或「你叫我每天傳給你」這種話"
+)
+
+DEFAULT_REQUEST_BLOCK = (
+    "今天沒有特別交代的主題，自由發揮就好——可以聊個簡短話題、分享想法、或問對方今天怎樣。\n"
 )
 
 
@@ -508,9 +515,15 @@ async def _send_split_messages(bot, chat_id: int, text: str) -> None:
 async def _send_daily_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     job = context.job
     chat_id = job.chat_id
-    tz = schedules.get(chat_id, {}).get("tz", DEFAULT_TZ)
+    s = schedules.get(chat_id, {})
+    tz = s.get("tz", DEFAULT_TZ)
     now = datetime.now(ZoneInfo(tz)).strftime("%Y-%m-%d %H:%M")
-    prompt = DAILY_PROMPT_TEMPLATE.format(now=now, tz=tz)
+    custom = (s.get("prompt") or "").strip()
+    if custom:
+        request = f"對方有交代每天這個時間希望聽到的內容：「{custom}」\n請依照這個方向回覆，需要查資料就直接搜尋。\n"
+    else:
+        request = DEFAULT_REQUEST_BLOCK
+    prompt = DAILY_PROMPT_TEMPLATE.format(now=now, tz=tz, request=request)
 
     logging.info("觸發每日訊息 chat=%s @ %s", chat_id, now)
     try:
@@ -550,17 +563,23 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         s = schedules.get(chat_id)
         if not s:
             await update.message.reply_text(
-                "目前沒有排程～\n用法：`/schedule 08:30` 設定每天主動傳訊息的時間\n`/schedule off` 關閉",
+                "目前沒有排程～\n"
+                "用法：\n"
+                "• `/schedule 08:30` 設定每天主動傳訊息的時間\n"
+                "• `/schedule 08:30 跟我說早安，整理昨天美股動態` 加上希望聽到的內容\n"
+                "• `/schedule off` 關閉",
                 parse_mode="Markdown",
             )
         else:
+            extra = f"\n內容：{s['prompt']}" if s.get("prompt") else ""
             await update.message.reply_text(
-                f"每天 {s['time']}（{s.get('tz', DEFAULT_TZ)}）我會主動傳訊息給你～\n要關掉就 /schedule off",
+                f"每天 {s['time']}（{s.get('tz', DEFAULT_TZ)}）我會主動傳訊息給你～{extra}\n"
+                "要關掉就 /schedule off",
             )
         return
 
-    arg = args[0].lower()
-    if arg in ("off", "stop", "cancel", "關", "關閉", "取消"):
+    first = args[0].lower()
+    if first in ("off", "stop", "cancel", "關", "關閉", "取消"):
         if chat_id in schedules:
             schedules.pop(chat_id, None)
             _save_schedules()
@@ -572,7 +591,7 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        hh_str, mm_str = arg.split(":")
+        hh_str, mm_str = first.split(":")
         hh, mm = int(hh_str), int(mm_str)
         if not (0 <= hh < 24 and 0 <= mm < 60):
             raise ValueError
@@ -583,11 +602,14 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    custom_prompt = " ".join(args[1:]).strip() or None
+
     tz = schedules.get(chat_id, {}).get("tz", DEFAULT_TZ)
-    schedules[chat_id] = {"time": f"{hh:02d}:{mm:02d}", "tz": tz}
+    schedules[chat_id] = {"time": f"{hh:02d}:{mm:02d}", "tz": tz, "prompt": custom_prompt}
     _save_schedules()
     _register_schedule(context.application, chat_id, hh, mm, tz)
-    await update.message.reply_text(f"OK，每天 {hh:02d}:{mm:02d}（{tz}）會主動傳訊息給你～")
+    extra = f"\n內容：{custom_prompt}" if custom_prompt else ""
+    await update.message.reply_text(f"OK，每天 {hh:02d}:{mm:02d}（{tz}）會主動傳訊息給你～{extra}")
 
 
 async def _send_response(update: Update, response_text: str):
