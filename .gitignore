@@ -1,6 +1,7 @@
 .env
 sessions.json
 memory.json
+schedules.json
 system_prompt.txt
 photos/
 __pycache__/
