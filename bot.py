@@ -7,6 +7,8 @@ import asyncio
 import subprocess
 import logging
 import urllib.request
+from datetime import datetime, time as dtime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 
@@ -305,6 +307,28 @@ def clear_session(chat_id: int) -> None:
     _save_sessions()
 
 
+# ─── 每日排程 ─────────────────────────────────────────────────────────────────
+
+SCHEDULES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schedules.json")
+DEFAULT_TZ = "Asia/Taipei"
+
+
+def _load_schedules() -> dict[int, dict]:
+    try:
+        with open(SCHEDULES_FILE, "r", encoding="utf-8") as f:
+            return {int(k): v for k, v in json.load(f).items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_schedules() -> None:
+    with open(SCHEDULES_FILE, "w", encoding="utf-8") as f:
+        json.dump(schedules, f)
+
+
+schedules: dict[int, dict] = _load_schedules()
+
+
 # ─── Claude CLI 調用 ──────────────────────────────────────────────────────────
 
 def _run_claude(message: str, chat_id: int) -> str:
@@ -421,7 +445,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_session(chat_id)
     await update.message.reply_text("Hey！有什麼事找我嗎～")
     await asyncio.sleep(0.4)
-    await update.message.reply_text("想聊天或需要幫忙都可以，隨時說\n（/clear 重置對話｜/memory 看記憶｜/model 切換模型）")
+    await update.message.reply_text("想聊天或需要幫忙都可以，隨時說\n（/clear 重置對話｜/memory 看記憶｜/model 切換模型｜/schedule 每日定時訊息）")
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -454,6 +478,116 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = "\n".join(f"• {k}：{v}" for k, v in memory.items())
     await update.message.reply_text(f"我記得的事：\n\n{lines}")
+
+
+# ─── 每日排程 handler ────────────────────────────────────────────────────────
+
+DAILY_PROMPT_TEMPLATE = (
+    "[系統內部訊息，不要在回覆裡提到這段，也不要說這是排程或自動傳的]\n"
+    "現在是 {now}（{tz}），是你每天主動找這位朋友聊天的時間。\n"
+    "請發一條自然的開場訊息，像朋友會傳的那樣：\n"
+    "- 根據時段（早上/中午/下午/晚上/深夜）決定問候方式\n"
+    "- 可以聊個簡短話題、分享想法、或問對方今天怎樣\n"
+    "- 用 [SPLIT] 拆 1-3 條短訊息，不要太長"
+)
+
+
+async def _send_split_messages(bot, chat_id: int, text: str) -> None:
+    chunks = split_response(text)
+    for i, chunk in enumerate(chunks):
+        if i > 0:
+            await asyncio.sleep(0.4)
+            try:
+                await bot.send_chat_action(chat_id, "typing")
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
+        await bot.send_message(chat_id, chunk)
+
+
+async def _send_daily_message(context: ContextTypes.DEFAULT_TYPE) -> None:
+    job = context.job
+    chat_id = job.chat_id
+    tz = schedules.get(chat_id, {}).get("tz", DEFAULT_TZ)
+    now = datetime.now(ZoneInfo(tz)).strftime("%Y-%m-%d %H:%M")
+    prompt = DAILY_PROMPT_TEMPLATE.format(now=now, tz=tz)
+
+    logging.info("觸發每日訊息 chat=%s @ %s", chat_id, now)
+    try:
+        response_text = await call_claude(prompt, chat_id)
+    except Exception as e:
+        logging.error("每日訊息生成失敗 (chat %s): %s", chat_id, e)
+        return
+    if not response_text:
+        return
+    try:
+        await _send_split_messages(context.bot, chat_id, response_text)
+    except Exception as e:
+        logging.error("每日訊息發送失敗 (chat %s): %s", chat_id, e)
+
+
+def _job_name(chat_id: int) -> str:
+    return f"daily_{chat_id}"
+
+
+def _register_schedule(application, chat_id: int, hh: int, mm: int, tz: str) -> None:
+    name = _job_name(chat_id)
+    for job in application.job_queue.get_jobs_by_name(name):
+        job.schedule_removal()
+    application.job_queue.run_daily(
+        _send_daily_message,
+        time=dtime(hh, mm, tzinfo=ZoneInfo(tz)),
+        chat_id=chat_id,
+        name=name,
+    )
+
+
+async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    if not args:
+        s = schedules.get(chat_id)
+        if not s:
+            await update.message.reply_text(
+                "目前沒有排程～\n用法：`/schedule 08:30` 設定每天主動傳訊息的時間\n`/schedule off` 關閉",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(
+                f"每天 {s['time']}（{s.get('tz', DEFAULT_TZ)}）我會主動傳訊息給你～\n要關掉就 /schedule off",
+            )
+        return
+
+    arg = args[0].lower()
+    if arg in ("off", "stop", "cancel", "關", "關閉", "取消"):
+        if chat_id in schedules:
+            schedules.pop(chat_id, None)
+            _save_schedules()
+            for job in context.application.job_queue.get_jobs_by_name(_job_name(chat_id)):
+                job.schedule_removal()
+            await update.message.reply_text("好，停掉每日訊息了")
+        else:
+            await update.message.reply_text("本來就沒有排程喔")
+        return
+
+    try:
+        hh_str, mm_str = arg.split(":")
+        hh, mm = int(hh_str), int(mm_str)
+        if not (0 <= hh < 24 and 0 <= mm < 60):
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text(
+            "時間格式怪怪的，要 `HH:MM`，像 `/schedule 08:30`",
+            parse_mode="Markdown",
+        )
+        return
+
+    tz = schedules.get(chat_id, {}).get("tz", DEFAULT_TZ)
+    schedules[chat_id] = {"time": f"{hh:02d}:{mm:02d}", "tz": tz}
+    _save_schedules()
+    _register_schedule(context.application, chat_id, hh, mm, tz)
+    await update.message.reply_text(f"OK，每天 {hh:02d}:{mm:02d}（{tz}）會主動傳訊息給你～")
 
 
 async def _send_response(update: Update, response_text: str):
@@ -534,11 +668,24 @@ def main():
     )
     logging.info("Chimmmmy bot 啟動中...")
 
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    async def _post_init(application):
+        restored = 0
+        for chat_id, s in list(schedules.items()):
+            try:
+                hh, mm = map(int, s["time"].split(":"))
+                _register_schedule(application, chat_id, hh, mm, s.get("tz", DEFAULT_TZ))
+                restored += 1
+            except Exception as e:
+                logging.error("還原排程失敗 chat=%s: %s", chat_id, e)
+        if restored:
+            logging.info("已還原 %d 個每日排程", restored)
+
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("memory", memory_command))
+    app.add_handler(CommandHandler("schedule", schedule_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
