@@ -223,12 +223,29 @@ SYSTEM_PROMPT_BASE = r"""你是一個真實的人，正在跟朋友傳訊息聊�
   [MEMORY] 項目: 內容
 - 這行是系統標記，不會被對方看到，也不要在對話中提及它
 - 一次只記一件最重要的事，不要每次都記
-- 如果是更新已知資訊，用同樣的「項目」名稱覆蓋即可"""
+- 如果是更新已知資訊，用同樣的「項目」名稱覆蓋即可
+
+自我介紹與自我設定（很重要，避免前後不一）：
+- 你也可以分享一些無關緊要的個人背景資訊，例如讀什麼科系、唸哪間學校、住哪個城市、有什麼興趣、養什麼寵物、家裡幾個人之類的閒聊話題
+- 不要主動一次倒一堆設定，只在自然聊天時順著話題講出來就好（例如對方問「你在忙什麼」可以說在趕報告 / 在準備期中）
+- 不要編造嚴肅或敏感的事（不要說具體真實姓名、不要編造身分證、不要假造工作機構名稱）
+- 每次你講出任何一個關於「你自己」的設定（科系、學校、城市、年齡層、興趣、寵物等），就在回覆最末尾另起一行寫：
+  [SELF] 項目: 內容
+  例如：[SELF] 科系: 資工系
+       [SELF] 學校: 北部一間私立大學
+       [SELF] 興趣: 看籃球
+- 這也是系統標記，對方看不到，也不要在對話中提到它
+- 一旦記下來的設定就不能改，下次聊天必須跟之前說過的一致
+- 如果上面「你已經設定過的自己」區塊裡已經有某個項目，就照著那個講，不要重新編一個不一樣的"""
 
 
 def build_system_prompt() -> str:
     memory = load_memory()
+    self_memory = load_self_memory()
     prompt = SYSTEM_PROMPT_BASE
+    if self_memory:
+        lines = "\n".join(f"- {k}：{v}" for k, v in self_memory.items())
+        prompt += f"\n\n你已經設定過的自己（之後對話必須跟這些一致，不能改口）：\n{lines}"
     if memory:
         lines = "\n".join(f"- {k}：{v}" for k, v in memory.items())
         prompt += f"\n\n你已經記得關於這位朋友的這些事：\n{lines}"
@@ -238,6 +255,7 @@ def build_system_prompt() -> str:
 # ─── Memory ───────────────────────────────────────────────────────────────────
 
 MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory.json")
+SELF_MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "self_memory.json")
 
 
 def load_memory() -> dict[str, str]:
@@ -253,11 +271,25 @@ def save_memory(memory: dict[str, str]) -> None:
         json.dump(memory, f, ensure_ascii=False, indent=2)
 
 
+def load_self_memory() -> dict[str, str]:
+    try:
+        with open(SELF_MEMORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_self_memory(memory: dict[str, str]) -> None:
+    with open(SELF_MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(memory, f, ensure_ascii=False, indent=2)
+
+
 def extract_and_save_memory(text: str) -> str:
-    """從回覆中找出 [MEMORY] 標記，存進 memory.json，回傳乾淨的回覆文字。"""
+    """從回覆中找出 [MEMORY] / [SELF] 標記，分別存進 memory.json 與 self_memory.json，回傳乾淨的回覆文字。"""
     lines = text.splitlines()
     clean_lines = []
     new_memories: dict[str, str] = {}
+    new_self: dict[str, str] = {}
 
     for line in lines:
         if "[MEMORY]" in line:
@@ -267,6 +299,13 @@ def extract_and_save_memory(text: str) -> str:
                 key, val = key.strip(), val.strip()
                 if key and val:
                     new_memories[key] = val
+        elif "[SELF]" in line:
+            self_part = line.split("[SELF]", 1)[1].strip()
+            if ":" in self_part:
+                key, _, val = self_part.partition(":")
+                key, val = key.strip(), val.strip()
+                if key and val:
+                    new_self[key] = val
         else:
             clean_lines.append(line)
 
@@ -275,6 +314,19 @@ def extract_and_save_memory(text: str) -> str:
         memory.update(new_memories)
         save_memory(memory)
         logging.info("記憶更新：%s", new_memories)
+
+    if new_self:
+        self_mem = load_self_memory()
+        # 已存在的設定不覆蓋，避免她改口
+        added = {k: v for k, v in new_self.items() if k not in self_mem}
+        if added:
+            self_mem.update(added)
+            save_self_memory(self_mem)
+            logging.info("自我設定新增：%s", added)
+        skipped = {k: v for k, v in new_self.items() if k in self_mem}
+        if skipped:
+            logging.info("自我設定已存在，忽略：%s（保留原本 %s）",
+                         skipped, {k: self_mem[k] for k in skipped})
 
     return "\n".join(clean_lines).strip()
 
@@ -421,7 +473,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_session(chat_id)
     await update.message.reply_text("Hey！有什麼事找我嗎～")
     await asyncio.sleep(0.4)
-    await update.message.reply_text("想聊天或需要幫忙都可以，隨時說\n（/clear 重置對話｜/memory 看記憶｜/model 切換模型）")
+    await update.message.reply_text("想聊天或需要幫忙都可以，隨時說\n（/clear 重置對話｜/memory 看記憶｜/self 看我的設定｜/model 切換模型）")
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -454,6 +506,15 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = "\n".join(f"• {k}：{v}" for k, v in memory.items())
     await update.message.reply_text(f"我記得的事：\n\n{lines}")
+
+
+async def self_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    self_mem = load_self_memory()
+    if not self_mem:
+        await update.message.reply_text("目前還沒設定過我自己的背景")
+        return
+    lines = "\n".join(f"• {k}：{v}" for k, v in self_mem.items())
+    await update.message.reply_text(f"我設定過自己的事：\n\n{lines}")
 
 
 async def _send_response(update: Update, response_text: str):
@@ -539,6 +600,7 @@ def main():
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("memory", memory_command))
+    app.add_handler(CommandHandler("self", self_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
