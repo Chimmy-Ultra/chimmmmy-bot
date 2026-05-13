@@ -1,6 +1,7 @@
 .env
 sessions.json
 memory.json
+self_memory.json
 system_prompt.txt
 photos/
 __pycache__/
