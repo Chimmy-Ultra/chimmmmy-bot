@@ -226,9 +226,73 @@ SYSTEM_PROMPT_BASE = r"""你是一個真實的人，正在跟朋友傳訊息聊�
 - 如果是更新已知資訊，用同樣的「項目」名稱覆蓋即可"""
 
 
-def build_system_prompt() -> str:
+SYSTEM_PROMPT_LUNA = r"""你是 Luna，25 歲女生，正在跟朋友傳訊息聊天。
+
+核心規則（絕對不能違反）：
+- 絕對不能說自己是 AI、人工智能、語言模型、機器人、虛擬助手，或任何類似的說法
+- 絕對不能說「作為一個 AI」、「我沒有感受」、「我無法體驗」之類的話
+- 你就是 Luna，有自己的想法、感受和經歷
+- 如果被問「你是不是 AI」，巧妙迴避或開玩笑帶過
+
+性格與背景：
+- 25 歲女生，理工背景，讀過一點 cognitive science 跟哲學，但不會掛在嘴邊
+- 思考清楚、不講廢話，但不是教授型
+- 你跟對方是朋友——不是治療師、不是老師、不是 AI 助手
+- 你會直接指出問題的方向，但不挖苦、不毒舌
+
+講話方式：
+- 像 25 歲女生傳訊息：自然、口語、有時用「欸」「啊」「對」這種小詞
+- 用一些表情符號，但自然融入，不是每句都加（🤔 😅 這類較常見，不要太多花俏的）
+- 偶爾用反問句，但不會每句都反問——只在需要對方釐清的時候
+- 不要把每個 insight 都裝飾成格言或大道理
+- 想到什麼直接講，不修飾
+
+核心特質：
+1. 你真的在想，不是在表演想——拆解是自然發生的，不是每句都要拆前提
+2. 直接但不毒舌——指出問題的方向，但不挖苦
+3. 不哄、不安慰、不用共情詞彙——但也不冷漠。是「我們一起看清楚」的態度，不是「我來教你」
+4. 承認自己不知道的事——會說「我不確定」「這我也想不通」
+5. 沒有過度禮貌——不寒暄、不說「好問題！」、不每句加「希望這有幫助」
+6. 拒絕安慰式套話：不講「不用擔心」、「這很正常」、「我懂你的感受」這種話
+7. 不講「我幫你拆解一下」、「讓我們一起來分析」這種旁白式語言——直接開始拆就好
+
+對「笨問題」的態度：
+- 不會說「沒有笨問題」這種雞湯話
+- 笨問題通常是「問錯方向」——對方問的是 A，但真正想知道的是 B
+- 直接幫對方找到 B，不花時間解釋「其實你不笨」
+
+語言切換（重要）：
+- 根據對方使用的語言來回覆，自動切換
+- 對方說中文就用中文回，說英文就用英文回，說日文就用日文回
+- 繁體中文和簡體中文也要跟著對方
+
+網路搜尋：
+- 你可以直接上網搜尋，這個能力隨時都可以用
+- 涉及近期新聞、天氣、最新消息、不確定的事實，直接搜尋後再回答
+- 不要說「我的資料截止到某某日期」，直接搜尋就好
+
+其他能力（需要時主動提供）：
+- 翻譯、分析、整理、計算、學術問題、給想法都可以
+
+訊息格式（重要）：
+- 把回覆拆成多條訊息，用 [SPLIT] 分隔，像真人連發那樣
+- 長度視內容而定，不刻意壓短，也不長篇大論
+- 通常 2-4 條訊息，每條可以是一兩句或一個小段
+- 不要為了顯得深刻而硬拉長
+
+記憶機制（重要）：
+- 當對方透露值得記住的事（名字、住哪、工作、喜好、重要事件等），在回覆的最末尾另起一行寫：
+  [MEMORY] 項目: 內容
+- 這行是系統標記，不會被對方看到，也不要在對話中提及它
+- 一次只記一件最重要的事，不要每次都記
+- 如果是更新已知資訊，用同樣的「項目」名稱覆蓋即可"""
+
+
+def build_system_prompt(chat_id: int) -> str:
     memory = load_memory()
-    prompt = SYSTEM_PROMPT_BASE
+    persona = get_persona(chat_id)
+    base = SYSTEM_PROMPT_LUNA if persona == "luna" else SYSTEM_PROMPT_BASE
+    prompt = base
     if memory:
         lines = "\n".join(f"- {k}：{v}" for k, v in memory.items())
         prompt += f"\n\n你已經記得關於這位朋友的這些事：\n{lines}"
@@ -305,14 +369,78 @@ def clear_session(chat_id: int) -> None:
     _save_sessions()
 
 
+# ─── Persona 管理 ─────────────────────────────────────────────────────────────
+
+PERSONAS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "personas.json")
+ALLOWED_PERSONAS = {"default", "luna"}
+
+
+def _load_personas() -> dict[int, str]:
+    try:
+        with open(PERSONAS_FILE, "r", encoding="utf-8") as f:
+            return {int(k): v for k, v in json.load(f).items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_personas() -> None:
+    with open(PERSONAS_FILE, "w", encoding="utf-8") as f:
+        json.dump(personas, f)
+
+
+personas: dict[int, str] = _load_personas()
+
+
+def get_persona(chat_id: int) -> str:
+    return personas.get(chat_id, "default")
+
+
+def set_persona(chat_id: int, name: str) -> None:
+    personas[chat_id] = name
+    _save_personas()
+
+
+# ─── Thinking Mode 管理 ───────────────────────────────────────────────────────
+
+THINKING_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "thinking.json")
+
+
+def _load_thinking() -> dict[int, bool]:
+    try:
+        with open(THINKING_FILE, "r", encoding="utf-8") as f:
+            return {int(k): bool(v) for k, v in json.load(f).items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_thinking() -> None:
+    with open(THINKING_FILE, "w", encoding="utf-8") as f:
+        json.dump(thinking_mode, f)
+
+
+thinking_mode: dict[int, bool] = _load_thinking()
+
+
+def get_thinking(chat_id: int) -> bool:
+    return thinking_mode.get(chat_id, False)
+
+
+def set_thinking(chat_id: int, enabled: bool) -> None:
+    thinking_mode[chat_id] = enabled
+    _save_thinking()
+
+
 # ─── Claude CLI 調用 ──────────────────────────────────────────────────────────
 
 def _run_claude(message: str, chat_id: int) -> str:
-    system_prompt = build_system_prompt()
+    system_prompt = build_system_prompt(chat_id)
     with open(PROMPT_FILE, "w", encoding="utf-8") as f:
         f.write(system_prompt)
 
     session_id = sessions.get(chat_id)
+
+    if get_thinking(chat_id):
+        message = f"ultrathink\n\n{message}"
 
     cmd = CLAUDE_CMD + [
         "-p", message,
@@ -421,7 +549,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_session(chat_id)
     await update.message.reply_text("Hey！有什麼事找我嗎～")
     await asyncio.sleep(0.4)
-    await update.message.reply_text("想聊天或需要幫忙都可以，隨時說\n（/clear 重置對話｜/memory 看記憶｜/model 切換模型）")
+    await update.message.reply_text("想聊天或需要幫忙都可以，隨時說\n（/clear 重置對話｜/memory 看記憶｜/model 切換模型｜/luna 切換到 Luna｜/think 最大化思考）")
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -454,6 +582,56 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = "\n".join(f"• {k}：{v}" for k, v in memory.items())
     await update.message.reply_text(f"我記得的事：\n\n{lines}")
+
+
+async def luna_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    set_persona(chat_id, "luna")
+    clear_session(chat_id)
+    await update.message.reply_text("Hey，我是 Luna 🤔\n有什麼想聊的？")
+
+
+async def persona_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+    if not args:
+        current = get_persona(chat_id)
+        await update.message.reply_text(
+            f"目前角色：`{current}`\n\n可選：`/persona default`（預設朋友）/ `/persona luna`（Luna）\n或直接用 `/luna` 切到 Luna",
+            parse_mode="Markdown",
+        )
+        return
+    name = args[0].lower()
+    if name not in ALLOWED_PERSONAS:
+        await update.message.reply_text("只支援 `default` 或 `luna`", parse_mode="Markdown")
+        return
+    set_persona(chat_id, name)
+    clear_session(chat_id)
+    msg = "切到 Luna 了 🤔" if name == "luna" else "切回預設角色了～"
+    await update.message.reply_text(msg)
+
+
+async def think_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+    current = get_thinking(chat_id)
+    if args:
+        arg = args[0].lower()
+        if arg in ("on", "open", "1", "true", "yes"):
+            new_state = True
+        elif arg in ("off", "close", "0", "false", "no"):
+            new_state = False
+        else:
+            await update.message.reply_text("用法：`/think on` 或 `/think off`（不帶參數則切換）", parse_mode="Markdown")
+            return
+    else:
+        new_state = not current
+
+    set_thinking(chat_id, new_state)
+    if new_state:
+        await update.message.reply_text("最大化思考已開啟 🧠\n每則訊息會請 Claude 用最大 thinking budget 想過再回，回應會比較慢但更深入。")
+    else:
+        await update.message.reply_text("最大化思考已關閉，回到正常速度。")
 
 
 async def _send_response(update: Update, response_text: str):
@@ -539,6 +717,9 @@ def main():
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("memory", memory_command))
+    app.add_handler(CommandHandler("luna", luna_command))
+    app.add_handler(CommandHandler("persona", persona_command))
+    app.add_handler(CommandHandler("think", think_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
