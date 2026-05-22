@@ -32,14 +32,24 @@ def _seed_credentials():
         json.dump(creds, f)
 
 _seed_credentials()
+from datetime import time as dtime, timedelta
+from zoneinfo import ZoneInfo
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    MessageHandler,
     ContextTypes,
+    MessageHandler,
     filters,
 )
+
+from aggregator import digest as agg_digest
+from aggregator import economy as agg_economy
+from aggregator import news as agg_news
+from aggregator import papers as agg_papers
+from aggregator import state as agg_state
+from aggregator import weather as agg_weather
 
 # ─── 配置 ────────────────────────────────────────────────────────────────────
 
@@ -456,6 +466,145 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"我記得的事：\n\n{lines}")
 
 
+# ─── Aggregator 指令 ──────────────────────────────────────────────────────────
+
+async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    added = agg_state.add_subscriber(chat_id)
+    if added:
+        await update.message.reply_text(
+            "訂閱成功 ✅\n每天早上 8 點（台北時間）會推天氣 + 新聞 + 論文 + 經濟數據。\n"
+            "經濟指標一公布也會即時推。\n\n隨時用 /unsubscribe 取消。"
+        )
+    else:
+        await update.message.reply_text("你已經訂閱了～")
+
+
+async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    removed = agg_state.remove_subscriber(chat_id)
+    if removed:
+        await update.message.reply_text("已取消訂閱。想回來隨時 /subscribe")
+    else:
+        await update.message.reply_text("你本來就沒訂閱啊")
+
+
+async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_action("typing")
+    try:
+        text = await agg_digest.build_daily_digest()
+    except Exception as e:
+        logging.error("digest 失敗: %s", e)
+        await update.message.reply_text("digest 抓取失敗，等一下再試")
+        return
+    await _send_response(update, text)
+
+
+async def weather_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_action("typing")
+    try:
+        text = await agg_weather.fetch_taipei_weather()
+    except Exception as e:
+        logging.error("weather 失敗: %s", e)
+        await update.message.reply_text("天氣 API 暫時抓不到")
+        return
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def papers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keywords = context.args if context.args else None
+    await update.effective_chat.send_action("typing")
+    try:
+        items = await agg_papers.fetch_papers(
+            categories=["q-fin", "econ"], keywords=keywords, days=3, max_results=20
+        )
+    except Exception as e:
+        logging.error("papers 失敗: %s", e)
+        await update.message.reply_text("arXiv 暫時抓不到")
+        return
+    header = "📄 *arXiv 新論文*"
+    if keywords:
+        header += f" (關鍵字：{', '.join(keywords)})"
+    await update.message.reply_text(
+        agg_papers.format_papers(items, header=header),
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+    )
+
+
+async def econ_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_action("typing")
+    try:
+        items = await agg_economy.fetch_latest_all()
+    except Exception as e:
+        logging.error("econ 失敗: %s", e)
+        await update.message.reply_text("FRED 暫時抓不到")
+        return
+    await update.message.reply_text(agg_economy.format_snapshot(items), parse_mode="Markdown")
+
+
+async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_action("typing")
+    try:
+        items = await agg_news.fetch_hn_top(10)
+    except Exception as e:
+        logging.error("news 失敗: %s", e)
+        await update.message.reply_text("HN 暫時抓不到")
+        return
+    await update.message.reply_text(
+        agg_news.format_hn(items), parse_mode="Markdown", disable_web_page_preview=True
+    )
+
+
+# ─── Aggregator Jobs ──────────────────────────────────────────────────────────
+
+async def _broadcast(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    subs = agg_state.load_subscribers()
+    if not subs:
+        return
+    chunks = split_response(text)
+    for chat_id in subs:
+        try:
+            for i, chunk in enumerate(chunks):
+                if i > 0:
+                    await asyncio.sleep(0.4)
+                await context.bot.send_message(
+                    chat_id=chat_id, text=chunk,
+                    parse_mode="Markdown", disable_web_page_preview=True,
+                )
+        except Exception as e:
+            logging.error("推播給 %s 失敗: %s", chat_id, e)
+
+
+async def daily_digest_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not agg_state.load_subscribers():
+        return
+    logging.info("執行每日 digest")
+    try:
+        text = await agg_digest.build_daily_digest()
+    except Exception as e:
+        logging.error("daily digest 組裝失敗: %s", e)
+        return
+    await _broadcast(context, text)
+
+
+async def econ_release_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not agg_state.load_subscribers():
+        return
+    try:
+        releases = await agg_economy.check_new_releases()
+    except Exception as e:
+        logging.error("econ release check 失敗: %s", e)
+        return
+    if not releases:
+        return
+    logging.info("偵測到 %d 個經濟指標新發布", len(releases))
+    text = agg_economy.format_releases_batch(
+        releases, header="📊 *經濟數據新發布*"
+    )
+    await _broadcast(context, text)
+
+
 async def _send_response(update: Update, response_text: str):
     """分割並發送回覆。"""
     if not response_text:
@@ -539,8 +688,32 @@ def main():
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("memory", memory_command))
+    app.add_handler(CommandHandler("subscribe", subscribe_command))
+    app.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
+    app.add_handler(CommandHandler("digest", digest_command))
+    app.add_handler(CommandHandler("weather", weather_command))
+    app.add_handler(CommandHandler("news", news_command))
+    app.add_handler(CommandHandler("papers", papers_command))
+    app.add_handler(CommandHandler("econ", econ_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    if app.job_queue is None:
+        logging.warning(
+            "JobQueue 未啟用，定時推播不會運作。"
+            "請安裝 python-telegram-bot[job-queue]。"
+        )
+    else:
+        tz = ZoneInfo("Asia/Taipei")
+        app.job_queue.run_daily(
+            daily_digest_job, time=dtime(hour=8, minute=0, tzinfo=tz),
+            name="daily_digest",
+        )
+        app.job_queue.run_repeating(
+            econ_release_check_job, interval=timedelta(minutes=30),
+            first=timedelta(seconds=60), name="econ_release_check",
+        )
+        logging.info("排程已註冊：daily digest 08:00 Asia/Taipei；econ check 每 30 分鐘")
 
     logging.info("上線！按 Ctrl+C 停止。")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
