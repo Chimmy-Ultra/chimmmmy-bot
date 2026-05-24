@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Flow Field Particles</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #000; cursor: crosshair; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px;
+    color: rgba(255,255,255,0.35); font: 12px/1 -apple-system, system-ui, sans-serif;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">move your mouse · refresh for a new field</div>
+<script>
+'use strict';
+
+const perm = new Uint8Array(512);
+{
+  const p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+  for (let i = 255; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [p[i], p[j]] = [p[j], p[i]];
+  }
+  for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+}
+const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+const lerp = (a, b, t) => a + t * (b - a);
+function grad(h, x, y, z) {
+  const g = h & 15;
+  const u = g < 8 ? x : y;
+  const v = g < 4 ? y : (g === 12 || g === 14 ? x : z);
+  return ((g & 1) === 0 ? u : -u) + ((g & 2) === 0 ? v : -v);
+}
+function noise(x, y, z) {
+  const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+  x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+  const u = fade(x), v = fade(y), w = fade(z);
+  const A = perm[X] + Y, AA = perm[A] + Z, AB = perm[A + 1] + Z;
+  const B = perm[X + 1] + Y, BA = perm[B] + Z, BB = perm[B + 1] + Z;
+  return lerp(
+    lerp(
+      lerp(grad(perm[AA], x, y, z),     grad(perm[BA], x - 1, y, z), u),
+      lerp(grad(perm[AB], x, y - 1, z), grad(perm[BB], x - 1, y - 1, z), u), v),
+    lerp(
+      lerp(grad(perm[AA + 1], x, y, z - 1),     grad(perm[BA + 1], x - 1, y, z - 1), u),
+      lerp(grad(perm[AB + 1], x, y - 1, z - 1), grad(perm[BB + 1], x - 1, y - 1, z - 1), u), v),
+    w
+  );
+}
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+let W, H, DPR;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+let mx = -9999, my = -9999;
+window.addEventListener('pointermove', e => { mx = e.clientX; my = e.clientY; });
+window.addEventListener('pointerleave', () => { mx = -9999; my = -9999; });
+
+const NUM = 2800;
+const NOISE_SCALE = 0.0014;
+const SPEED = 1.4;
+const MAX_AGE = 220;
+const REPEL_RADIUS = 110;
+const REPEL_FORCE = 3.2;
+
+class Particle {
+  constructor() { this.reset(true); }
+  reset(initial) {
+    this.x = Math.random() * W;
+    this.y = Math.random() * H;
+    this.age = initial ? Math.random() * MAX_AGE : 0;
+  }
+}
+const particles = Array.from({ length: NUM }, () => new Particle());
+ctx.lineWidth = 1.1;
+ctx.lineCap = 'round';
+
+function loop(t) {
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.035)';
+  ctx.fillRect(0, 0, W, H);
+
+  const tz = t * 0.00025;
+  for (let i = 0; i < NUM; i++) {
+    const p = particles[i];
+    const n = noise(p.x * NOISE_SCALE, p.y * NOISE_SCALE, tz);
+    const angle = n * Math.PI * 4;
+    let vx = Math.cos(angle) * SPEED;
+    let vy = Math.sin(angle) * SPEED;
+
+    const dx = p.x - mx, dy = p.y - my;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < REPEL_RADIUS * REPEL_RADIUS && d2 > 0.01) {
+      const d = Math.sqrt(d2);
+      const f = (1 - d / REPEL_RADIUS) * REPEL_FORCE;
+      vx += (dx / d) * f;
+      vy += (dy / d) * f;
+    }
+
+    const px = p.x, py = p.y;
+    p.x += vx;
+    p.y += vy;
+    p.age++;
+
+    const hue = (n * 180 + t * 0.012 + 240) % 360;
+    ctx.strokeStyle = `hsla(${hue}, 85%, 62%, 0.85)`;
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+
+    if (p.x < -10 || p.x > W + 10 || p.y < -10 || p.y > H + 10 || p.age > MAX_AGE) {
+      p.reset(false);
+    }
+  }
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
