@@ -8,6 +8,7 @@
 fallback 到固定 UTC+8。
 """
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -34,7 +35,7 @@ def week_window(now):
     return last_reset, last_reset + timedelta(days=7)
 
 
-def build_pace_table(now=None):
+def build_pace_table(now=None, current=None):
     tz = resolve_tz()
     now = now or datetime.now(tz)
     last_reset, next_reset = week_window(now)
@@ -55,7 +56,7 @@ def build_pace_table(now=None):
         lines.append(f"{weekdays[cp.weekday()]} {cp:%m/%d %H:%M} → {pct:5.1f}%{mark}")
     table = "\n".join(lines)
 
-    return (
+    out = (
         "📊 Claude Code 用量配速表\n"
         "週期：每週五 15:00 重置\n\n"
         "⏱ 本週進度\n"
@@ -70,6 +71,57 @@ def build_pace_table(now=None):
         f"📅 每日檢查點\n{table}"
     )
 
+    if current is not None:
+        out += "\n\n" + _compare_block(current, on_pace, elapsed_h, per_hour,
+                                       remaining_h, now, next_reset)
+    return out
+
+
+def _compare_block(current, on_pace, elapsed_h, per_hour, remaining_h, now, next_reset):
+    diff = current - on_pace
+    if diff > 0.5:
+        verdict = f"超前均速 {diff:.1f}%（用得偏快，注意別提早用完）"
+    elif diff < -0.5:
+        verdict = f"落後均速 {abs(diff):.1f}%（還有餘裕，可以再用快一點）"
+    else:
+        verdict = "差不多就在均速上"
+
+    compare = (
+        "🎯 你的進度對比\n"
+        f"目前用量：{current:.1f}%\n"
+        f"此刻均速應在：{on_pace:.1f}%\n"
+        f"→ {verdict}"
+    )
+
+    if elapsed_h < 1:
+        est = "📈 依目前速度預估\n剛重置不久，資料太少先不預估"
+    elif current <= 0:
+        est = "📈 依目前速度預估\n目前還沒用，到重置都用不完"
+    else:
+        rate = current / elapsed_h
+        projected = rate * WEEK_HOURS
+        est = (
+            "📈 依目前速度預估\n"
+            f"目前燒速：{rate:.2f}%/小時（均速 {per_hour:.2f}%）\n"
+        )
+        if projected <= 100:
+            est += f"到重置（{next_reset:%m/%d %H:%M}）預估用到 {projected:.1f}%，用不完"
+        else:
+            eta = now + timedelta(hours=(100 - current) / rate)
+            early_h = (next_reset - eta).total_seconds() / 3600
+            est += (
+                f"⚠️ 預估 {eta:%m/%d %H:%M} 就會用完"
+                f"（比重置早 {early_h:.1f} 小時）"
+            )
+
+    return compare + "\n\n" + est
+
 
 if __name__ == "__main__":
-    print(build_pace_table())
+    arg = None
+    if len(sys.argv) > 1:
+        try:
+            arg = float(sys.argv[1])
+        except ValueError:
+            print(f"（無法解析「{sys.argv[1]}」為百分比，忽略；用法例：pace.py 45）\n")
+    print(build_pace_table(current=arg))
