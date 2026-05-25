@@ -7,7 +7,7 @@ import asyncio
 import subprocess
 import logging
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
@@ -435,7 +435,17 @@ def set_thinking(chat_id: int, enabled: bool) -> None:
 # ─── 用量配速表 ───────────────────────────────────────────────────────────────
 # Claude Code 週用量額度每週五 15:00 重置；配速表幫你算「均速」該用多少。
 
-PACE_TZ = ZoneInfo(os.environ.get("PACE_TZ", "Asia/Taipei"))
+def _resolve_pace_tz():
+    """解析配速用時區。抓不到 tzdata 就 fallback 固定 UTC+8，避免拖垮 bot 啟動。"""
+    name = os.environ.get("PACE_TZ", "Asia/Taipei")
+    try:
+        return ZoneInfo(name)
+    except Exception as e:
+        logging.warning("無法載入時區 %s（%s），改用固定 UTC+8", name, e)
+        return timezone(timedelta(hours=8))
+
+
+PACE_TZ = _resolve_pace_tz()
 RESET_WEEKDAY = 4   # 週一=0 ... 週五=4
 RESET_HOUR = 15     # 下午三點
 WEEK_HOURS = 7 * 24  # 168
