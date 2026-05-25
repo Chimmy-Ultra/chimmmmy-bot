@@ -7,6 +7,8 @@ import asyncio
 import subprocess
 import logging
 import urllib.request
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 
@@ -430,6 +432,61 @@ def set_thinking(chat_id: int, enabled: bool) -> None:
     _save_thinking()
 
 
+# ─── 用量配速表 ───────────────────────────────────────────────────────────────
+# Claude Code 週用量額度每週五 15:00 重置；配速表幫你算「均速」該用多少。
+
+PACE_TZ = ZoneInfo(os.environ.get("PACE_TZ", "Asia/Taipei"))
+RESET_WEEKDAY = 4   # 週一=0 ... 週五=4
+RESET_HOUR = 15     # 下午三點
+WEEK_HOURS = 7 * 24  # 168
+
+
+def _week_window(now: datetime) -> tuple[datetime, datetime]:
+    """回傳 (上次重置, 下次重置)，皆為週五 15:00。"""
+    days_since = (now.weekday() - RESET_WEEKDAY) % 7
+    last_reset = now.replace(hour=RESET_HOUR, minute=0, second=0, microsecond=0) \
+                    - timedelta(days=days_since)
+    if last_reset > now:
+        last_reset -= timedelta(days=7)
+    return last_reset, last_reset + timedelta(days=7)
+
+
+def build_pace_table() -> str:
+    now = datetime.now(PACE_TZ)
+    last_reset, next_reset = _week_window(now)
+
+    elapsed_h = (now - last_reset).total_seconds() / 3600
+    progress = elapsed_h / WEEK_HOURS              # 時間進度 0~1
+    per_hour = 100 / WEEK_HOURS                     # 均速：每小時 %
+    per_day = per_hour * 24                         # 均速：每天 %
+    on_pace = progress * 100                        # 此刻均速應用到的 %
+    remaining_h = WEEK_HOURS - elapsed_h
+
+    weekdays = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
+    lines = []
+    for d in range(8):
+        cp = last_reset + timedelta(days=d)
+        pct = min(d * per_day, 100)
+        mark = "  ← 現在" if cp <= now < cp + timedelta(days=1) else ""
+        lines.append(f"{weekdays[cp.weekday()]} {cp:%m/%d %H:%M} → {pct:5.1f}%{mark}")
+    table = "\n".join(lines)
+
+    return (
+        "📊 Claude Code 用量配速表\n"
+        "週期：每週五 15:00 重置\n\n"
+        f"⏱ 本週進度\n"
+        f"上次重置：{last_reset:%m/%d (%a) %H:%M}\n"
+        f"下次重置：{next_reset:%m/%d (%a) %H:%M}\n"
+        f"已過 {elapsed_h:.1f} 小時 / {WEEK_HOURS}（{progress*100:.1f}%）\n"
+        f"剩餘 {remaining_h:.1f} 小時\n\n"
+        f"🎯 均速配速（把額度平均攤到整週）\n"
+        f"每小時：{per_hour:.2f}%\n"
+        f"每天：{per_day:.1f}%\n"
+        f"此刻應在：{on_pace:.1f}%（用超過代表偏快，用不到代表偏慢）\n\n"
+        f"📅 每日檢查點\n{table}"
+    )
+
+
 # ─── Claude CLI 調用 ──────────────────────────────────────────────────────────
 
 def _run_claude(message: str, chat_id: int) -> str:
@@ -549,7 +606,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_session(chat_id)
     await update.message.reply_text("Hey！有什麼事找我嗎～")
     await asyncio.sleep(0.4)
-    await update.message.reply_text("想聊天或需要幫忙都可以，隨時說\n（/clear 重置對話｜/memory 看記憶｜/model 切換模型｜/luna 切換到 Luna｜/think 最大化思考）")
+    await update.message.reply_text("想聊天或需要幫忙都可以，隨時說\n（/clear 重置對話｜/memory 看記憶｜/model 切換模型｜/luna 切換到 Luna｜/think 最大化思考｜/pace 用量配速表）")
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -632,6 +689,10 @@ async def think_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("最大化思考已開啟 🧠\n每則訊息會請 Claude 用最大 thinking budget 想過再回，回應會比較慢但更深入。")
     else:
         await update.message.reply_text("最大化思考已關閉，回到正常速度。")
+
+
+async def pace_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_pace_table())
 
 
 async def _send_response(update: Update, response_text: str):
@@ -720,6 +781,7 @@ def main():
     app.add_handler(CommandHandler("luna", luna_command))
     app.add_handler(CommandHandler("persona", persona_command))
     app.add_handler(CommandHandler("think", think_command))
+    app.add_handler(CommandHandler("pace", pace_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
