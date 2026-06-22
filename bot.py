@@ -10,12 +10,17 @@ import urllib.request
 from dotenv import load_dotenv
 
 
+def _claude_dir():
+    """Claude CLI 設定目錄。可用 CLAUDE_CONFIG_DIR 指到持久卷，預設 ~/.claude。"""
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+
+
 def _seed_credentials():
-    """雲端部署用：從環境變數建立 ~/.claude/.credentials.json"""
+    """雲端部署用：從環境變數建立 <config>/.credentials.json"""
     refresh_token = os.environ.get("CLAUDE_REFRESH_TOKEN")
     if not refresh_token:
         return
-    cred_dir = os.path.expanduser("~/.claude")
+    cred_dir = _claude_dir()
     os.makedirs(cred_dir, exist_ok=True)
     cred_file = os.path.join(cred_dir, ".credentials.json")
     if os.path.exists(cred_file):
@@ -77,6 +82,11 @@ else:
 # System prompt 寫到檔案，避免 Windows 把特殊字元吃掉
 PROMPT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "system_prompt.txt")
 
+# 狀態檔（記憶/session/persona/照片）放這裡。雲端可用 DATA_DIR 指到持久卷，
+# 預設為腳本所在目錄，本地行為不變。
+DATA_DIR = os.environ.get("DATA_DIR") or os.path.dirname(os.path.abspath(__file__))
+os.makedirs(DATA_DIR, exist_ok=True)
+
 # ENV 保留 context vars，但拿掉可能過期的 auth vars
 ENV = os.environ.copy()
 for _k in _AUTH_VARS:
@@ -89,7 +99,7 @@ if platform.system() == "Windows":
 
 # ─── OAuth Token 自動刷新 ──────────────────────────────────────────────────────
 
-CREDENTIALS_FILE = os.path.expanduser("~/.claude/.credentials.json")
+CREDENTIALS_FILE = os.path.join(_claude_dir(), ".credentials.json")
 _OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 _CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
@@ -301,7 +311,7 @@ def build_system_prompt(chat_id: int) -> str:
 
 # ─── Memory ───────────────────────────────────────────────────────────────────
 
-MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory.json")
+MEMORY_FILE = os.path.join(DATA_DIR, "memory.json")
 
 
 def load_memory() -> dict[str, str]:
@@ -345,7 +355,7 @@ def extract_and_save_memory(text: str) -> str:
 
 # ─── Session 管理 ─────────────────────────────────────────────────────────────
 
-SESSIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions.json")
+SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
 
 
 def _load_sessions() -> dict[int, str]:
@@ -371,7 +381,7 @@ def clear_session(chat_id: int) -> None:
 
 # ─── Persona 管理 ─────────────────────────────────────────────────────────────
 
-PERSONAS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "personas.json")
+PERSONAS_FILE = os.path.join(DATA_DIR, "personas.json")
 ALLOWED_PERSONAS = {"default", "luna"}
 
 
@@ -402,7 +412,7 @@ def set_persona(chat_id: int, name: str) -> None:
 
 # ─── Thinking Mode 管理 ───────────────────────────────────────────────────────
 
-THINKING_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "thinking.json")
+THINKING_FILE = os.path.join(DATA_DIR, "thinking.json")
 
 
 def _load_thinking() -> dict[int, bool]:
@@ -668,7 +678,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── 照片處理 ─────────────────────────────────────────────────────────────────
 
-PHOTOS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "photos")
+PHOTOS_DIR = os.path.join(DATA_DIR, "photos")
 os.makedirs(PHOTOS_DIR, exist_ok=True)
 
 
