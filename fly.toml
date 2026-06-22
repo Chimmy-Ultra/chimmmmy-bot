@@ -1,0 +1,22 @@
+# Fly.io 部署設定 — chimmmmy Telegram bot（長輪詢，無對外 HTTP）
+# 部署前請改 app 名稱與 region，並用 `fly secrets set` 設定金鑰。
+app = "chimmmmy-bot"
+primary_region = "nrt"  # nrt=東京；可改成離你最近的 region
+
+[build]
+
+[env]
+  DATA_DIR = "/data"
+  CLAUDE_CONFIG_DIR = "/data/.claude"
+
+# 持久卷：保存 memory.json / sessions.json / personas.json / 照片 / OAuth credentials
+# 重啟或重新部署都不會遺失。建立指令：
+#   fly volumes create chimmmmy_data --size 1 --region nrt
+[mounts]
+  source = "chimmmmy_data"
+  destination = "/data"
+
+# 這是 worker（純 polling，沒有對外服務），保持一台機器常駐
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1024mb"

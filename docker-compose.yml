@@ -1,0 +1,15 @@
+# 自架 / VPS 部署用。先複製 .env.example 成 .env 並填入金鑰，然後：
+#   docker compose up -d --build
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      CLAUDE_CONFIG_DIR: /data/.claude
+    volumes:
+      - bot-data:/data
+
+volumes:
+  bot-data:
